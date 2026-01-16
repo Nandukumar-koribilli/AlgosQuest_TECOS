@@ -2,7 +2,6 @@
 
 A lightweight protocol to securely transfer large data files with high compression and end-to-end encryption.
 
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-green.svg)
 
 ## Features
@@ -120,5 +119,6 @@ Files are compressed using Gzip (default) or Brotli (for text content) before en
 - **URL Fragment**: Decryption key stored in URL fragment (not sent to server)
 - **Password Protection**: Optional bcrypt-hashed password protection
 - **HTTPS Ready**: Deploy behind HTTPS for production
+
 
 
