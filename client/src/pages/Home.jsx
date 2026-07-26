@@ -1,116 +1,214 @@
-import { useState, useCallback } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { 
-  Upload, 
-  Shield, 
-  Zap, 
-  Lock, 
-  FileText,
-  CheckCircle,
+import {
+  Upload,
+  Shield,
+  Zap,
+  Lock,
+  CheckCircle2,
   Copy,
   ExternalLink,
   AlertCircle,
-  Loader2
+  Loader2,
+  X,
+  Eye,
+  EyeOff,
+  Sparkles,
+  Timer,
+  DownloadCloud,
+  KeyRound,
+  Cpu
 } from 'lucide-react';
-import axios from 'axios';
-import { io } from 'socket.io-client';
+import { api, formatBytes, buildShareUrl } from '../lib/api';
+import { createSocket, waitForSocketId } from '../lib/socket';
+import { vault } from '../lib/vault';
+import { getFileIcon } from '../lib/fileIcon';
+import { useToast } from '../lib/toastContext';
 import './Home.css';
 
-const API_URL = 'http://localhost:3001';
+const STAGE_LABEL = {
+  uploading: 'Uploading to server…',
+  compressing: 'Compressing…',
+  encrypting: 'Encrypting (AES-256-GCM)…',
+  complete: 'Done',
+  '': 'Preparing…'
+};
 
-function Home() {
+const EXPIRY_OPTIONS = [
+  { value: '1', label: '1 hour' },
+  { value: '6', label: '6 hours' },
+  { value: '24', label: '24 hours' },
+  { value: '72', label: '3 days' },
+  { value: '168', label: '7 days' },
+  { value: '', label: 'Never' }
+];
+
+const COMPRESSION_OPTIONS = [
+  { value: '1', label: 'Fast · Level 1' },
+  { value: '3', label: 'Quick · Level 3' },
+  { value: '6', label: 'Balanced · Level 6' },
+  { value: '9', label: 'Maximum · Level 9' }
+];
+
+export default function Home() {
+  const toast = useToast();
+
   const [file, setFile] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadStage, setUploadStage] = useState('');
+  const [uploadAlgorithm, setUploadAlgorithm] = useState(null);
   const [uploadResult, setUploadResult] = useState(null);
   const [error, setError] = useState(null);
   const [copied, setCopied] = useState(false);
-  
-  // Upload options
+  const [showPassword, setShowPassword] = useState(false);
+
   const [password, setPassword] = useState('');
   const [expiresIn, setExpiresIn] = useState('24');
   const [maxDownloads, setMaxDownloads] = useState('');
   const [compressionLevel, setCompressionLevel] = useState('6');
 
-  const onDrop = useCallback((acceptedFiles) => {
-    if (acceptedFiles.length > 0) {
-      setFile(acceptedFiles[0]);
-      setError(null);
-      setUploadResult(null);
-    }
+  const socketRef = useRef(null);
+
+  useEffect(() => {
+    return () => {
+      if (socketRef.current) socketRef.current.disconnect();
+    };
   }, []);
+
+  const onDrop = useCallback(
+    (accepted, rejections) => {
+      if (rejections?.length) {
+        const first = rejections[0].errors?.[0];
+        toast.error(first?.message || 'File was rejected');
+        return;
+      }
+      if (accepted.length > 0) {
+        setFile(accepted[0]);
+        setError(null);
+        setUploadResult(null);
+      }
+    },
+    [toast]
+  );
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
     multiple: false,
-    maxSize: 500 * 1024 * 1024 // 500MB
+    maxSize: 500 * 1024 * 1024
   });
 
-  const formatFileSize = (bytes) => {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  };
+  const FileIcon = useMemo(
+    () => (file ? getFileIcon(file.name, file.type) : null),
+    [file]
+  );
 
   const handleUpload = async () => {
-    if (!file) return;
+    if (!file || uploading) return;
 
     setUploading(true);
     setUploadProgress(0);
-    setUploadStage('Preparing...');
+    setUploadStage('');
     setError(null);
 
-    // Connect to socket for real-time progress
-    const socket = io(API_URL);
-    
+    const socket = createSocket();
+    socketRef.current = socket;
+
     socket.on('upload-progress', (data) => {
-      setUploadProgress(data.progress);
-      setUploadStage(data.stage === 'compressing' ? 'Compressing file...' :
-                     data.stage === 'encrypting' ? 'Encrypting with AES-256...' :
-                     data.stage === 'complete' ? 'Complete!' : 'Processing...');
+      setUploadProgress(data.progress || 0);
+      setUploadStage(data.stage || '');
+      if (data.algorithm) setUploadAlgorithm(data.algorithm);
     });
+
+    // The transfer id only exists once the server has accepted the upload, so
+    // we cannot join its room beforehand. Instead we hand the server our socket
+    // id and let it address the progress events straight back to us.
+    const socketId = await waitForSocketId(socket);
 
     try {
       const formData = new FormData();
       formData.append('file', file);
       formData.append('compressionLevel', compressionLevel);
+      if (socketId) formData.append('socketId', socketId);
       if (password) formData.append('password', password);
       if (expiresIn) formData.append('expiresIn', expiresIn);
       if (maxDownloads) formData.append('maxDownloads', maxDownloads);
 
-      const response = await axios.post(`${API_URL}/api/upload`, formData, {
+      const response = await api.post('/upload', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
         onUploadProgress: (progressEvent) => {
-          const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-          if (percentCompleted < 30) {
-            setUploadProgress(percentCompleted);
-            setUploadStage('Uploading file...');
+          if (!progressEvent.total) return;
+          const percent = Math.round(
+            (progressEvent.loaded * 100) / progressEvent.total
+          );
+          if (percent < 30) {
+            setUploadProgress(percent);
+            setUploadStage('uploading');
           }
         }
       });
 
+      vault.save(response.data.transfer.id, {
+        key: response.data.decryptionKey,
+        tag: response.data.authTag,
+        filename: response.data.transfer.filename
+      });
+
       setUploadResult(response.data);
       setUploadProgress(100);
-      setUploadStage('Complete!');
-      
+      setUploadStage('complete');
+      toast.success('Upload complete — link ready to share');
     } catch (err) {
       console.error('Upload error:', err);
-      setError(err.response?.data?.message || 'Upload failed. Please try again.');
+      const message =
+        err.response?.data?.message ||
+        err.response?.data?.error ||
+        err.message ||
+        'Upload failed. Please try again.';
+      setError(message);
+      toast.error(message);
     } finally {
       setUploading(false);
       socket.disconnect();
+      socketRef.current = null;
     }
   };
 
+  const shareUrl = uploadResult
+    ? buildShareUrl(
+        uploadResult.transfer.id,
+        uploadResult.decryptionKey,
+        uploadResult.authTag
+      )
+    : '';
+
   const copyToClipboard = async () => {
-    if (uploadResult) {
-      const downloadUrl = `${window.location.origin}/download/${uploadResult.transfer.id}#key=${uploadResult.decryptionKey}&tag=${uploadResult.authTag}`;
-      await navigator.clipboard.writeText(downloadUrl);
+    if (!shareUrl) return;
+    try {
+      await navigator.clipboard.writeText(shareUrl);
       setCopied(true);
+      toast.success('Link copied to clipboard');
       setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Clipboard error:', err);
+      toast.error('Could not copy — please copy manually');
+    }
+  };
+
+  const shareNative = async () => {
+    if (!shareUrl) return;
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: 'Secure download link',
+          text: `Encrypted file: ${uploadResult.transfer.filename}`,
+          url: shareUrl
+        });
+      } catch (err) {
+        if (err.name !== 'AbortError') toast.error('Share cancelled');
+      }
+    } else {
+      copyToClipboard();
     }
   };
 
@@ -119,121 +217,135 @@ function Home() {
     setUploadResult(null);
     setUploadProgress(0);
     setUploadStage('');
+    setUploadAlgorithm(null);
     setError(null);
     setPassword('');
     setExpiresIn('24');
     setMaxDownloads('');
+    setShowPassword(false);
   };
+
+  const stageLabel =
+    STAGE_LABEL[uploadStage] || 'Processing…';
 
   return (
     <div className="home">
       <div className="container">
-        {/* Hero Section */}
         <section className="hero animate-fade-in">
           <div className="hero-badge">
-            <Shield size={14} />
-            <span>End-to-End Encrypted</span>
+            <Sparkles size={12} />
+            <span>Zero-knowledge · Client-key delivery</span>
           </div>
           <h1 className="hero-title">
-            Compressed & Encrypted
-            <span className="text-gradient"> Data Transfer Protocol</span>
+            Send files with{' '}
+            <span className="text-gradient">military-grade encryption</span>
           </h1>
           <p className="hero-description">
-            A lightweight protocol to securely transfer large data files with 
-            high compression and end-to-end encryption.
+            AES-256-GCM authenticated encryption, Gzip &amp; Brotli compression, one-click
+            share links. Your decryption key lives only in the URL fragment — the server
+            never sees it after upload.
           </p>
-          
+
           <div className="hero-features">
-            <div className="feature-tag">
-              <Lock size={14} />
-              <span>Encryption</span>
-            </div>
-            <div className="feature-tag">
-              <Zap size={14} />
-              <span>Compression</span>
-            </div>
-            <div className="feature-tag">
-              <FileText size={14} />
-              <span>Node.js</span>
-            </div>
-            <div className="feature-tag">
-              <Shield size={14} />
-              <span>DB</span>
-            </div>
+            <div className="feature-tag"><Lock size={12} /><span>AES-256-GCM</span></div>
+            <div className="feature-tag"><Zap size={12} /><span>Brotli / Gzip</span></div>
+            <div className="feature-tag"><Timer size={12} /><span>Auto-expiry</span></div>
+            <div className="feature-tag"><KeyRound size={12} /><span>URL-fragment key</span></div>
           </div>
         </section>
 
-        {/* Upload Section */}
         {!uploadResult ? (
-          <section className="upload-section animate-fade-in">
-            <div 
-              {...getRootProps()} 
-              className={`dropzone ${isDragActive ? 'dropzone-active' : ''} ${file ? 'dropzone-has-file' : ''}`}
+          <section className="upload-section">
+            <div
+              {...getRootProps()}
+              className={`dropzone ${isDragActive ? 'is-active' : ''} ${file ? 'has-file' : ''}`}
+              aria-label="Upload file"
             >
               <input {...getInputProps()} />
-              
+
               {file ? (
                 <div className="file-preview">
                   <div className="file-icon">
-                    <FileText size={32} />
+                    <FileIcon size={28} />
                   </div>
                   <div className="file-info">
-                    <span className="file-name">{file.name}</span>
-                    <span className="file-size">{formatFileSize(file.size)}</span>
+                    <span className="file-name" title={file.name}>{file.name}</span>
+                    <span className="file-size">
+                      {formatBytes(file.size)} · {file.type || 'application/octet-stream'}
+                    </span>
                   </div>
-                  <button 
-                    className="btn btn-secondary"
-                    onClick={(e) => { e.stopPropagation(); setFile(null); }}
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setFile(null);
+                    }}
+                    disabled={uploading}
+                    aria-label="Remove file"
                   >
-                    Change
+                    <X size={16} />
                   </button>
                 </div>
               ) : (
                 <div className="dropzone-content">
-                  <div className="dropzone-icon">
-                    <Upload size={32} />
+                  <div className="dropzone-icon animate-float">
+                    <Upload size={30} />
                   </div>
                   <p className="dropzone-text">
-                    {isDragActive ? 'Drop your file here' : 'Drag & drop your file here'}
+                    {isDragActive ? 'Drop your file to begin' : 'Drag & drop a file here'}
                   </p>
-                  <p className="dropzone-subtext">or click to browse (max 500MB)</p>
+                  <p className="dropzone-subtext">or click to browse · up to 500 MB</p>
                 </div>
               )}
             </div>
 
             {file && (
-              <div className="upload-options">
-                <h3>Transfer Options</h3>
-                
+              <div className="upload-options animate-fade-in">
+                <div className="options-header">
+                  <h3>Transfer options</h3>
+                  <span className="options-hint">
+                    All settings are optional. Sensible defaults work for most files.
+                  </span>
+                </div>
+
                 <div className="options-grid">
                   <div className="option-group">
-                    <label>Password Protection (optional)</label>
-                    <input 
-                      type="password"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      placeholder="Enter password"
-                    />
+                    <label>
+                      <Lock size={12} />
+                      Password (optional)
+                    </label>
+                    <div className="input-with-toggle">
+                      <input
+                        type={showPassword ? 'text' : 'password'}
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        placeholder="Add a password"
+                        autoComplete="new-password"
+                      />
+                      <button
+                        type="button"
+                        className="input-toggle"
+                        onClick={() => setShowPassword((s) => !s)}
+                        aria-label={showPassword ? 'Hide password' : 'Show password'}
+                      >
+                        {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                      </button>
+                    </div>
                   </div>
-                  
+
                   <div className="option-group">
-                    <label>Expires In</label>
-                    <select 
-                      value={expiresIn}
-                      onChange={(e) => setExpiresIn(e.target.value)}
-                    >
-                      <option value="1">1 hour</option>
-                      <option value="6">6 hours</option>
-                      <option value="24">24 hours</option>
-                      <option value="72">3 days</option>
-                      <option value="168">7 days</option>
-                      <option value="">Never</option>
+                    <label><Timer size={12} /> Expires in</label>
+                    <select value={expiresIn} onChange={(e) => setExpiresIn(e.target.value)}>
+                      {EXPIRY_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
+                      ))}
                     </select>
                   </div>
-                  
+
                   <div className="option-group">
-                    <label>Max Downloads (optional)</label>
-                    <input 
+                    <label><DownloadCloud size={12} /> Max downloads</label>
+                    <input
                       type="number"
                       value={maxDownloads}
                       onChange={(e) => setMaxDownloads(e.target.value)}
@@ -241,17 +353,16 @@ function Home() {
                       min="1"
                     />
                   </div>
-                  
+
                   <div className="option-group">
-                    <label>Compression Level</label>
-                    <select 
+                    <label><Cpu size={12} /> Compression level</label>
+                    <select
                       value={compressionLevel}
                       onChange={(e) => setCompressionLevel(e.target.value)}
                     >
-                      <option value="1">Fast (Level 1)</option>
-                      <option value="3">Quick (Level 3)</option>
-                      <option value="6">Balanced (Level 6)</option>
-                      <option value="9">Maximum (Level 9)</option>
+                      {COMPRESSION_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
+                      ))}
                     </select>
                   </div>
                 </div>
@@ -259,27 +370,36 @@ function Home() {
                 {uploading ? (
                   <div className="upload-progress">
                     <div className="progress-header">
-                      <Loader2 className="animate-spin" size={20} />
-                      <span>{uploadStage}</span>
+                      <Loader2 className="animate-spin" size={18} />
+                      <span>{stageLabel}</span>
+                      {uploadAlgorithm && (
+                        <span className="tag tag-accent">
+                          {uploadAlgorithm.toUpperCase()}
+                        </span>
+                      )}
                       <span className="progress-percent">{uploadProgress}%</span>
                     </div>
                     <div className="progress-bar">
-                      <div 
-                        className="progress-fill" 
+                      <div
+                        className="progress-fill"
                         style={{ width: `${uploadProgress}%` }}
                       />
                     </div>
                   </div>
                 ) : (
-                  <button className="btn btn-primary upload-btn" onClick={handleUpload}>
-                    <Shield size={18} />
-                    <span>Encrypt & Upload</span>
+                  <button
+                    className="btn btn-primary upload-btn"
+                    onClick={handleUpload}
+                    type="button"
+                  >
+                    <Shield size={16} />
+                    <span>Encrypt &amp; Share</span>
                   </button>
                 )}
 
                 {error && (
                   <div className="error-message">
-                    <AlertCircle size={18} />
+                    <AlertCircle size={16} />
                     <span>{error}</span>
                   </div>
                 )}
@@ -287,98 +407,113 @@ function Home() {
             )}
           </section>
         ) : (
-          <section className="success-section animate-fade-in">
+          <section className="success-section animate-fade-in-up">
             <div className="success-card card">
-              <div className="success-icon">
-                <CheckCircle size={48} />
+              <div className="success-header">
+                <div className="success-icon">
+                  <CheckCircle2 size={30} />
+                </div>
+                <div>
+                  <h2>Ready to share</h2>
+                  <p>Your file is encrypted, compressed, and waiting.</p>
+                </div>
               </div>
-              <h2>Transfer Complete!</h2>
-              <p>Your file has been encrypted and uploaded securely.</p>
-              
-              <div className="transfer-stats">
-                <div className="stat">
-                  <span className="stat-label">Original Size</span>
-                  <span className="stat-value">{uploadResult.transfer.originalSize}</span>
-                </div>
-                <div className="stat">
-                  <span className="stat-label">Compressed Size</span>
-                  <span className="stat-value">{uploadResult.transfer.compressedSize}</span>
-                </div>
-                <div className="stat">
-                  <span className="stat-label">Space Saved</span>
-                  <span className="stat-value success">{uploadResult.transfer.savings}</span>
-                </div>
+
+              <div className="transfer-stats-grid">
+                <StatTile label="Original" value={uploadResult.transfer.originalSize} />
+                <StatTile
+                  label="Encrypted"
+                  value={uploadResult.transfer.compressedSize}
+                  accent
+                />
+                <StatTile
+                  label="Saved"
+                  value={uploadResult.transfer.spaceSavedPercent}
+                  success
+                />
+                <StatTile
+                  label="Algorithm"
+                  value={(uploadResult.transfer.algorithm || 'gzip').toUpperCase()}
+                />
               </div>
 
               <div className="download-link-section">
-                <label>Share this secure download link:</label>
+                <label>Secure download link</label>
                 <div className="download-link-box">
-                  <input 
-                    type="text"
-                    value={`${window.location.origin}/download/${uploadResult.transfer.id}#key=${uploadResult.decryptionKey}&tag=${uploadResult.authTag}`}
-                    readOnly
-                  />
-                  <button className="btn btn-icon" onClick={copyToClipboard}>
-                    {copied ? <CheckCircle size={20} /> : <Copy size={20} />}
+                  <input type="text" value={shareUrl} readOnly onClick={(e) => e.target.select()} />
+                  <button
+                    className="btn btn-icon"
+                    onClick={copyToClipboard}
+                    title="Copy link"
+                    aria-label="Copy link"
+                  >
+                    {copied ? <CheckCircle2 size={16} /> : <Copy size={16} />}
                   </button>
-                  <a 
-                    href={`/download/${uploadResult.transfer.id}#key=${uploadResult.decryptionKey}&tag=${uploadResult.authTag}`}
+                  <a
+                    href={shareUrl}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="btn btn-icon"
+                    title="Open in new tab"
+                    aria-label="Open link"
                   >
-                    <ExternalLink size={20} />
+                    <ExternalLink size={16} />
                   </a>
                 </div>
-                {copied && <span className="copied-text">Copied to clipboard!</span>}
+                <div className="link-hint">
+                  The key sits after <span className="mono">#key=</span> in the URL — it stays
+                  in the browser and never hits the server.
+                </div>
               </div>
 
               <div className="transfer-details">
-                <div className="detail">
-                  <Lock size={16} />
-                  <span>Password: {uploadResult.transfer.hasPassword ? 'Protected' : 'None'}</span>
-                </div>
-                <div className="detail">
-                  <span>Expires: {uploadResult.transfer.expiresAt ? new Date(uploadResult.transfer.expiresAt).toLocaleString() : 'Never'}</span>
-                </div>
-                <div className="detail">
-                  <span>Max Downloads: {uploadResult.transfer.maxDownloads}</span>
-                </div>
+                <span className="detail">
+                  <Lock size={13} />
+                  {uploadResult.transfer.hasPassword ? 'Password protected' : 'No password'}
+                </span>
+                <span className="detail">
+                  <Timer size={13} />
+                  {uploadResult.transfer.expiresAt
+                    ? `Expires ${new Date(uploadResult.transfer.expiresAt).toLocaleString()}`
+                    : 'Never expires'}
+                </span>
+                <span className="detail">
+                  <DownloadCloud size={13} />
+                  {uploadResult.transfer.maxDownloads} downloads
+                </span>
               </div>
 
-              <button className="btn btn-secondary mt-lg" onClick={resetUpload}>
-                Upload Another File
-              </button>
+              <div className="success-actions">
+                {navigator.share && (
+                  <button className="btn btn-secondary" onClick={shareNative}>
+                    Share…
+                  </button>
+                )}
+                <button className="btn btn-primary" onClick={resetUpload}>
+                  Upload another
+                </button>
+              </div>
             </div>
           </section>
         )}
 
-        {/* Features */}
         <section className="features-section">
           <div className="features-grid">
-            <div className="feature-card card card-hover">
-              <div className="feature-icon">
-                <Lock size={24} />
-              </div>
-              <h4>AES-256-GCM Encryption</h4>
-              <p>Military-grade encryption ensures your files are completely secure during transfer.</p>
-            </div>
-            
-            <div className="feature-card card card-hover">
-              <div className="feature-icon">
-                <Zap size={24} />
-              </div>
-              <h4>High Compression</h4>
-              <p>Advanced Gzip/Brotli compression reduces file sizes by up to 90%.</p>
-            </div>
-            
-            <div className="feature-card card card-hover">
-              <div className="feature-icon">
-                <Shield size={24} />
-              </div>
-              <h4>End-to-End Encryption</h4>
-              <p>Encryption keys never leave your browser. Only you and the recipient can decrypt.</p>
-            </div>
+            <FeatureCard
+              icon={Lock}
+              title="AES-256-GCM"
+              body="Authenticated encryption verifies both confidentiality and integrity. Tampering is detected on download."
+            />
+            <FeatureCard
+              icon={Zap}
+              title="Adaptive compression"
+              body="Brotli for text-like payloads, Gzip for binaries. Level tunable from Fast to Maximum."
+            />
+            <FeatureCard
+              icon={KeyRound}
+              title="Key stays in the URL"
+              body="The decryption key is delivered via the URL fragment — never sent to the server on subsequent requests."
+            />
           </div>
         </section>
       </div>
@@ -386,4 +521,23 @@ function Home() {
   );
 }
 
-export default Home;
+function StatTile({ label, value, accent, success }) {
+  return (
+    <div className={`stat-tile ${accent ? 'accent' : ''} ${success ? 'success' : ''}`}>
+      <span className="stat-tile-label">{label}</span>
+      <span className="stat-tile-value">{value}</span>
+    </div>
+  );
+}
+
+function FeatureCard({ icon: Icon, title, body }) {
+  return (
+    <div className="feature-card card card-hover">
+      <div className="feature-icon">
+        <Icon size={20} />
+      </div>
+      <h4>{title}</h4>
+      <p>{body}</p>
+    </div>
+  );
+}

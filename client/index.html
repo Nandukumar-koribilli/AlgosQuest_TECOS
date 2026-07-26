@@ -3,24 +3,41 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>
-      SecureTransfer - Compressed & Encrypted Data Transfer Protocol
-    </title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#0b0d16" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f6f7fb" media="(prefers-color-scheme: light)" />
+    <title>SecureTransfer · Encrypted & Compressed File Sharing</title>
     <meta
       name="description"
-      content="A lightweight protocol to securely transfer large data files with high compression and end-to-end encryption. AES-256-GCM encryption, Gzip/Brotli compression."
+      content="Send files with AES-256-GCM encryption and Gzip/Brotli compression. The decryption key stays in the URL fragment — the server never sees it."
     />
     <meta
       name="keywords"
-      content="secure file transfer, encryption, compression, AES-256, end-to-end encryption, file sharing"
+      content="secure file transfer, encryption, compression, AES-256-GCM, end-to-end encryption, file sharing"
     />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
       rel="stylesheet"
     />
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem('securetransfer.theme');
+          if (stored === 'light' || stored === 'dark') {
+            document.documentElement.dataset.theme = stored;
+          } else if (window.matchMedia('(prefers-color-scheme: light)').matches) {
+            document.documentElement.dataset.theme = 'light';
+          } else {
+            document.documentElement.dataset.theme = 'dark';
+          }
+        } catch (_) {
+          document.documentElement.dataset.theme = 'dark';
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

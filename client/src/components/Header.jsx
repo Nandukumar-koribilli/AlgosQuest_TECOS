@@ -1,47 +1,41 @@
-import { Link, useLocation } from 'react-router-dom';
-import { Shield, Upload, List, Lock } from 'lucide-react';
+import { NavLink, Link } from 'react-router-dom';
+import { ShieldCheck, Upload, List, Lock } from 'lucide-react';
+import ThemeToggle from './ThemeToggle';
 import './Header.css';
 
-function Header() {
-  const location = useLocation();
-  
+export default function Header() {
   return (
     <header className="header">
       <div className="header-container">
         <Link to="/" className="logo">
           <div className="logo-icon">
-            <Shield size={28} />
+            <ShieldCheck size={22} />
           </div>
           <div className="logo-text">
             <span className="logo-title">SecureTransfer</span>
-            <span className="logo-subtitle">Encrypted Protocol</span>
+            <span className="logo-subtitle">Encrypted · Compressed</span>
           </div>
         </Link>
-        
-        <nav className="nav">
-          <Link 
-            to="/" 
-            className={`nav-link ${location.pathname === '/' ? 'active' : ''}`}
-          >
-            <Upload size={18} />
-            <span>Upload</span>
-          </Link>
-          <Link 
-            to="/transfers" 
-            className={`nav-link ${location.pathname === '/transfers' ? 'active' : ''}`}
-          >
-            <List size={18} />
+
+        <nav className="nav" aria-label="Primary">
+          <NavLink to="/" end className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
+            <Upload size={16} />
+            <span>Send</span>
+          </NavLink>
+          <NavLink to="/transfers" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
+            <List size={16} />
             <span>Transfers</span>
-          </Link>
+          </NavLink>
         </nav>
-        
-        <div className="header-badge">
-          <Lock size={14} />
-          <span>AES-256</span>
+
+        <div className="header-actions">
+          <div className="header-badge" title="AES-256-GCM authenticated encryption">
+            <Lock size={12} />
+            <span>AES-256-GCM</span>
+          </div>
+          <ThemeToggle />
         </div>
       </div>
     </header>
   );
 }
-
-export default Header;

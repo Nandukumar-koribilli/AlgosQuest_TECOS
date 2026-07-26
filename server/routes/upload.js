@@ -15,16 +15,15 @@ const __dirname = path.dirname(__filename);
 
 const router = express.Router();
 
-// Configure multer for file uploads
+const MAX_FILE_BYTES = 500 * 1024 * 1024;
+
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
+  destination: (_req, _file, cb) => {
     const uploadDir = path.join(__dirname, '..', 'uploads', 'temp');
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
+    fs.mkdirSync(uploadDir, { recursive: true });
     cb(null, uploadDir);
   },
-  filename: (req, file, cb) => {
+  filename: (_req, file, cb) => {
     const uniqueName = `${Date.now()}-${uuidv4()}${path.extname(file.originalname)}`;
     cb(null, uniqueName);
   }
@@ -32,18 +31,50 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: {
-    fileSize: 500 * 1024 * 1024 // 500MB limit
-  }
+  limits: { fileSize: MAX_FILE_BYTES }
 });
 
-/**
- * POST /api/upload
- * Upload a file with compression and optional encryption
- */
+function safeUnlink(filePath) {
+  try {
+    if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  } catch (err) {
+    console.warn('Cleanup failed for', filePath, err.message);
+  }
+}
+
+// Busboy decodes multipart filenames as latin1, which mangles any non-ASCII
+// name (e.g. "résumé.txt" -> "rÃ©sumÃ©.txt"). Re-interpret the bytes as UTF-8.
+function decodeFilename(name) {
+  if (!name) return 'file';
+  const decoded = Buffer.from(name, 'latin1').toString('utf8');
+  return decoded.includes('�') ? name : decoded;
+}
+
+// The uploader cannot join the `transfer-<id>` room before it knows the id,
+// and the id is only minted here. So progress is emitted both to the room
+// (for observers that already know the id) and straight back to the socket
+// that initiated the upload.
+function makeEmitter(io, transferId, socketId) {
+  const targets = [`transfer-${transferId}`];
+
+  // socketId arrives from the client, and `to()` treats any string as a room
+  // name — so accept it only if it really is a live socket, otherwise a caller
+  // could aim its progress events at somebody else's transfer room.
+  if (typeof socketId === 'string' && io.sockets.sockets.has(socketId)) {
+    targets.push(socketId);
+  }
+
+  return (event, payload) => {
+    io.to(targets).emit(event, { transferId, ...payload });
+  };
+}
+
 router.post('/', upload.single('file'), async (req, res) => {
   const io = req.app.get('io');
-  
+  const originalFilePath = req.file?.path;
+  let compressedPath = null;
+  let finalPath = null;
+
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
@@ -51,95 +82,111 @@ router.post('/', upload.single('file'), async (req, res) => {
 
     const {
       password,
-      expiresIn, // in hours
+      expiresIn,
       maxDownloads,
+      socketId,
       compressionLevel = 6
     } = req.body;
 
     const transferId = await encryption.generateTransferId();
-    const originalFilePath = req.file.path;
     const originalSize = req.file.size;
-    const originalFilename = req.file.originalname;
+    const originalFilename = decodeFilename(req.file.originalname);
     const mimeType = req.file.mimetype;
 
-    // Emit upload started
-    io.emit('upload-started', { transferId, filename: originalFilename });
+    const emit = makeEmitter(io, transferId, socketId);
 
-    // Step 1: Generate encryption parameters
+    emit('upload-started', { filename: originalFilename });
+
     const iv = await encryption.generateIV();
     const salt = await encryption.generateSalt();
     const fileKey = await encryption.generateKey();
 
-    // Step 2: Compress the file
-    const compressedPath = path.join(__dirname, '..', 'uploads', 'temp', `${transferId}.compressed`);
-    const algorithm = compression.selectAlgorithm(mimeType);
-    
-    io.emit('upload-progress', { 
-      transferId, 
+    compressedPath = path.join(
+      __dirname,
+      '..',
+      'uploads',
+      'temp',
+      `${transferId}.compressed`
+    );
+    const preferredAlgorithm = compression.selectAlgorithm(mimeType);
+
+    emit('upload-progress', {
       stage: 'compressing',
-      progress: 30 
+      progress: 30,
+      algorithm: preferredAlgorithm
     });
 
+    const level = Math.min(9, Math.max(1, parseInt(compressionLevel, 10) || 6));
     const compressionResult = await compression.compressFile(
       originalFilePath,
       compressedPath,
-      algorithm,
-      parseInt(compressionLevel)
+      preferredAlgorithm,
+      level
     );
 
-    // Step 3: Encrypt the compressed file
-    io.emit('upload-progress', { 
-      transferId, 
-      stage: 'encrypting',
-      progress: 60 
-    });
+    // compressFile downgrades to 'none' when compression would inflate the
+    // payload, so record what was actually applied — the download path needs
+    // the real algorithm to reverse it.
+    const algorithm = compressionResult.algorithm;
+
+    emit('upload-progress', { stage: 'encrypting', progress: 60 });
 
     const compressedData = fs.readFileSync(compressedPath);
-    const { encrypted, authTag } = encryption.encrypt(compressedData, fileKey, iv);
+    const { encrypted, authTag } = encryption.encrypt(
+      compressedData,
+      fileKey,
+      iv
+    );
 
-    // Save encrypted file
-    const finalPath = path.join(__dirname, '..', 'uploads', `${transferId}.enc`);
+    finalPath = path.join(__dirname, '..', 'uploads', `${transferId}.enc`);
     fs.writeFileSync(finalPath, encrypted);
 
-    // Generate checksum
     const checksum = encryption.generateChecksum(encrypted);
 
-    // Clean up temp files
-    fs.unlinkSync(originalFilePath);
-    fs.unlinkSync(compressedPath);
+    safeUnlink(originalFilePath);
+    safeUnlink(compressedPath);
 
-    // Hash password if provided
     let passwordHash = null;
     if (password) {
       passwordHash = await bcrypt.hash(password, 10);
     }
 
-    // Calculate expiration
     let expiresAt = null;
     if (expiresIn) {
-      const expirationDate = new Date();
-      expirationDate.setHours(expirationDate.getHours() + parseInt(expiresIn));
-      expiresAt = expirationDate.toISOString();
+      const hours = parseInt(expiresIn, 10);
+      if (Number.isFinite(hours) && hours > 0) {
+        expiresAt = new Date(Date.now() + hours * 3600 * 1000).toISOString();
+      }
     }
 
-    // Save transfer record
+    const compressedSize = encrypted.length;
+    const savingsPercent = originalSize
+      ? Number(((1 - compressedSize / originalSize) * 100).toFixed(2))
+      : 0;
+    const spaceSavedBytes = originalSize - compressedSize;
+
     transferDb.create({
       id: transferId,
       filename: `${transferId}.enc`,
       original_filename: originalFilename,
       original_size: originalSize,
-      compressed_size: encrypted.length,
-      compression_ratio: parseFloat(compressionResult.ratio),
+      compressed_size: compressedSize,
+      compression_ratio: compressionResult.ratio,
+      space_saved_percent: savingsPercent,
+      algorithm,
       encryption_iv: iv,
       encryption_salt: salt,
+      encryption_auth_tag: authTag,
       password_hash: passwordHash,
       mime_type: mimeType,
       expires_at: expiresAt,
-      max_downloads: maxDownloads ? parseInt(maxDownloads) : null,
+      max_downloads:
+        maxDownloads && parseInt(maxDownloads, 10) > 0
+          ? parseInt(maxDownloads, 10)
+          : null,
       checksum
     });
 
-    // Log the upload
     logDb.create({
       transfer_id: transferId,
       action: 'upload',
@@ -147,129 +194,59 @@ router.post('/', upload.single('file'), async (req, res) => {
       user_agent: req.get('user-agent'),
       details: JSON.stringify({
         originalSize,
-        compressedSize: encrypted.length,
-        compressionRatio: compressionResult.ratio
+        compressedSize,
+        savingsPercent
       })
     });
 
-    io.emit('upload-progress', { 
-      transferId, 
-      stage: 'complete',
-      progress: 100 
-    });
+    emit('upload-progress', { stage: 'complete', progress: 100 });
 
-    // Return success with transfer details
-    // The key and authTag are needed for client-side decryption
     res.json({
       success: true,
       transfer: {
         id: transferId,
         filename: originalFilename,
         originalSize: compression.formatBytes(originalSize),
-        compressedSize: compression.formatBytes(encrypted.length),
-        compressionRatio: compressionResult.ratio + '%',
-        savings: compressionResult.savings + '%',
+        originalSizeBytes: originalSize,
+        compressedSize: compression.formatBytes(compressedSize),
+        compressedSizeBytes: compressedSize,
+        spaceSaved: compression.formatBytes(spaceSavedBytes),
+        spaceSavedBytes,
+        spaceSavedPercent: `${savingsPercent}%`,
+        compressionRatio: `${compressionResult.ratio}%`,
+        algorithm,
         expiresAt,
         maxDownloads: maxDownloads || 'Unlimited',
         hasPassword: !!password
       },
-      // These are needed for decryption - store securely!
       decryptionKey: fileKey,
       authTag,
-      // Generate download link
       downloadUrl: `/download/${transferId}#key=${fileKey}&tag=${authTag}`
     });
-
   } catch (error) {
     console.error('Upload error:', error);
-    
-    // Clean up on error
-    if (req.file && fs.existsSync(req.file.path)) {
-      fs.unlinkSync(req.file.path);
-    }
-    
-    res.status(500).json({ 
-      error: 'Upload failed', 
-      message: error.message 
+    safeUnlink(originalFilePath);
+    safeUnlink(compressedPath);
+    // Don't leave an orphaned .enc blob behind when the record was never stored
+    safeUnlink(finalPath);
+
+    res.status(500).json({
+      error: 'Upload failed',
+      message: error.message
     });
   }
 });
 
-/**
- * POST /api/upload/chunk
- * Handle chunked uploads for very large files
- */
-router.post('/chunk', upload.single('chunk'), async (req, res) => {
-  try {
-    const { 
-      transferId,
-      chunkIndex,
-      totalChunks,
-      filename 
-    } = req.body;
-
-    if (!req.file) {
-      return res.status(400).json({ error: 'No chunk data' });
-    }
-
-    const chunkDir = path.join(__dirname, '..', 'uploads', 'chunks', transferId);
-    if (!fs.existsSync(chunkDir)) {
-      fs.mkdirSync(chunkDir, { recursive: true });
-    }
-
-    // Save chunk
-    const chunkPath = path.join(chunkDir, `chunk-${chunkIndex}`);
-    fs.renameSync(req.file.path, chunkPath);
-
-    // Check if all chunks received
-    const chunks = fs.readdirSync(chunkDir);
-    const progress = Math.round((chunks.length / parseInt(totalChunks)) * 100);
-
-    const io = req.app.get('io');
-    io.emit('upload-progress', {
-      transferId,
-      stage: 'uploading',
-      progress: Math.min(progress, 30) // Cap at 30% for upload stage
-    });
-
-    if (chunks.length === parseInt(totalChunks)) {
-      // All chunks received - merge them
-      const mergedPath = path.join(__dirname, '..', 'uploads', 'temp', `${transferId}-merged`);
-      const writeStream = fs.createWriteStream(mergedPath);
-
-      for (let i = 0; i < parseInt(totalChunks); i++) {
-        const chunkPath = path.join(chunkDir, `chunk-${i}`);
-        const chunkData = fs.readFileSync(chunkPath);
-        writeStream.write(chunkData);
-        fs.unlinkSync(chunkPath);
-      }
-      
-      writeStream.end();
-      fs.rmdirSync(chunkDir);
-
-      res.json({
-        success: true,
-        message: 'All chunks received',
-        complete: true,
-        mergedPath
-      });
-    } else {
-      res.json({
-        success: true,
-        message: `Chunk ${chunkIndex + 1}/${totalChunks} received`,
-        complete: false,
-        received: chunks.length,
-        total: parseInt(totalChunks)
-      });
-    }
-
-  } catch (error) {
-    console.error('Chunk upload error:', error);
-    res.status(500).json({ 
-      error: 'Chunk upload failed', 
-      message: error.message 
+router.use((err, _req, res, _next) => {
+  if (err && err.code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({
+      error: 'File too large',
+      message: `Max upload size is ${MAX_FILE_BYTES / (1024 * 1024)}MB`
     });
   }
+  return res.status(500).json({
+    error: err.message || 'Upload failed'
+  });
 });
 
 export default router;

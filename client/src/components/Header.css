@@ -1,11 +1,10 @@
 .header {
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
+  inset: 0 0 auto 0;
   z-index: 100;
-  background: rgba(10, 10, 15, 0.8);
-  backdrop-filter: blur(12px);
+  background: color-mix(in srgb, var(--bg-primary) 78%, transparent);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
   border-bottom: 1px solid var(--border-color);
 }
 
@@ -17,95 +16,128 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: var(--spacing-lg);
 }
 
 .logo {
   display: flex;
   align-items: center;
-  gap: var(--spacing-md);
+  gap: 0.75rem;
   text-decoration: none;
+  color: inherit;
 }
 
 .logo-icon {
-  width: 44px;
-  height: 44px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
   background: var(--accent-gradient);
-  border-radius: var(--radius-lg);
+  border-radius: 12px;
   color: white;
+  box-shadow: 0 6px 18px -6px var(--accent-glow);
+  position: relative;
+  overflow: hidden;
 }
 
-.logo-text {
-  display: flex;
-  flex-direction: column;
+.logo-icon::after {
+  content: '';
+  position: absolute;
+  inset: -50%;
+  background: conic-gradient(from 0deg, transparent 0deg, rgba(255,255,255,0.35) 60deg, transparent 120deg);
+  animation: spin 6s linear infinite;
+  opacity: 0.35;
 }
 
+.logo-text { display: flex; flex-direction: column; line-height: 1.1; }
 .logo-title {
-  font-size: 1.125rem;
+  font-size: 1rem;
   font-weight: 700;
+  letter-spacing: -0.01em;
   color: var(--text-primary);
-  line-height: 1.2;
 }
-
 .logo-subtitle {
-  font-size: 0.75rem;
+  font-size: 0.68rem;
   color: var(--text-muted);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 .nav {
   display: flex;
   align-items: center;
-  gap: var(--spacing-sm);
+  gap: 4px;
+  padding: 4px;
+  background: color-mix(in srgb, var(--bg-tertiary) 60%, transparent);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-full);
 }
 
 .nav-link {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: var(--spacing-sm);
-  padding: var(--spacing-sm) var(--spacing-md);
+  gap: 6px;
+  padding: 0.4rem 0.85rem;
   color: var(--text-secondary);
   text-decoration: none;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-full);
   transition: all var(--transition-fast);
-  font-size: 0.875rem;
+  font-size: 0.82rem;
   font-weight: 500;
 }
 
 .nav-link:hover {
   color: var(--text-primary);
-  background: var(--bg-tertiary);
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
 }
 
 .nav-link.active {
-  color: var(--accent-primary);
-  background: rgba(59, 130, 246, 0.1);
+  color: white;
+  background: var(--accent-gradient);
+  box-shadow: 0 4px 14px -4px var(--accent-glow);
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
 }
 
 .header-badge {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: var(--spacing-xs);
-  padding: var(--spacing-xs) var(--spacing-sm);
-  background: rgba(16, 185, 129, 0.1);
-  border: 1px solid rgba(16, 185, 129, 0.3);
+  gap: 6px;
+  padding: 5px 10px;
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--success) 40%, transparent);
   border-radius: var(--radius-full);
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   color: var(--success);
-  font-weight: 500;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.theme-toggle {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--bg-tertiary) 80%, transparent);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color var(--transition-fast), background var(--transition-fast), transform var(--transition-fast);
+}
+
+.theme-toggle:hover {
+  color: var(--accent-primary);
+  transform: translateY(-1px);
 }
 
 @media (max-width: 768px) {
-  .logo-text {
-    display: none;
-  }
-  
-  .nav-link span {
-    display: none;
-  }
-  
-  .header-badge span {
-    display: none;
-  }
+  .logo-text { display: none; }
+  .nav-link span { display: none; }
+  .header-badge span { display: none; }
+  .header-container { gap: var(--spacing-sm); padding: 0 var(--spacing-md); }
 }

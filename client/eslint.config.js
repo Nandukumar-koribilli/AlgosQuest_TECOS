@@ -23,7 +23,13 @@ export default defineConfig([
       },
     },
     rules: {
-      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
+      // Nothing here tracks JSX identifier usage, so a component received as a
+      // prop (`{ icon: Icon }`) and rendered as `<Icon />` reads as unused.
+      // Exempt capitalised names for arguments the same way vars are exempt.
+      'no-unused-vars': [
+        'error',
+        { varsIgnorePattern: '^[A-Z_]', argsIgnorePattern: '^[A-Z_]' },
+      ],
     },
   },
 ])

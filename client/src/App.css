@@ -2,9 +2,62 @@
   min-height: 100vh;
   display: flex;
   flex-direction: column;
+  position: relative;
 }
 
 .main-content {
   flex: 1;
-  padding-top: 80px;
+  padding-top: 88px;
+  padding-bottom: var(--spacing-2xl);
 }
+
+.orbs {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.orbs .orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(80px);
+  opacity: 0.5;
+  animation: orb-drift 22s ease-in-out infinite alternate;
+  will-change: transform;
+}
+
+.orbs .orb-1 {
+  width: 380px;
+  height: 380px;
+  background: radial-gradient(circle, var(--accent-primary), transparent 70%);
+  top: -80px;
+  left: -80px;
+}
+
+.orbs .orb-2 {
+  width: 460px;
+  height: 460px;
+  background: radial-gradient(circle, var(--accent-secondary), transparent 70%);
+  top: 25%;
+  right: -140px;
+  animation-delay: -6s;
+}
+
+.orbs .orb-3 {
+  width: 320px;
+  height: 320px;
+  background: radial-gradient(circle, var(--accent-tertiary), transparent 70%);
+  bottom: -100px;
+  left: 30%;
+  animation-delay: -12s;
+}
+
+@keyframes orb-drift {
+  0%   { transform: translate(0, 0); }
+  50%  { transform: translate(40px, -30px); }
+  100% { transform: translate(-30px, 40px); }
+}
+
+:root[data-theme="light"] .orbs .orb { opacity: 0.35; }

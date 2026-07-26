@@ -23,7 +23,9 @@ export const CompressionLevel = {
  */
 export const Algorithm = {
   GZIP: 'gzip',
-  BROTLI: 'brotli'
+  BROTLI: 'brotli',
+  // "Stored" mode: payload kept verbatim because compressing it made it bigger.
+  NONE: 'none'
 };
 
 /**
@@ -102,16 +104,29 @@ export async function compressFile(inputPath, outputPath, algorithm = Algorithm.
     : createGzipStream(level);
   
   await pipeline(input, compressor, output);
-  
+
   // Get compression stats
   const originalSize = fs.statSync(inputPath).size;
-  const compressedSize = fs.statSync(outputPath).size;
-  
+  let compressedSize = fs.statSync(outputPath).size;
+  let usedAlgorithm = algorithm;
+
+  // Gzip and Brotli both inflate tiny or already-compressed payloads (a 5-byte
+  // file comes out at 25 bytes). Fall back to storing the bytes verbatim so a
+  // transfer is never larger than the file it came from.
+  if (compressedSize >= originalSize) {
+    await pipeline(
+      fs.createReadStream(inputPath),
+      fs.createWriteStream(outputPath)
+    );
+    compressedSize = originalSize;
+    usedAlgorithm = Algorithm.NONE;
+  }
+
   return {
     originalSize,
     compressedSize,
-    ratio: (compressedSize / originalSize * 100).toFixed(2),
-    savings: ((1 - compressedSize / originalSize) * 100).toFixed(2)
+    algorithm: usedAlgorithm,
+    ...getCompressionRatio(originalSize, compressedSize)
   };
 }
 
@@ -121,38 +136,55 @@ export async function compressFile(inputPath, outputPath, algorithm = Algorithm.
 export async function decompressFile(inputPath, outputPath, algorithm = Algorithm.GZIP) {
   const input = fs.createReadStream(inputPath);
   const output = fs.createWriteStream(outputPath);
-  
-  const decompressor = algorithm === Algorithm.BROTLI 
+
+  if (algorithm === Algorithm.NONE) {
+    await pipeline(input, output);
+    return fs.statSync(outputPath).size;
+  }
+
+  const decompressor = algorithm === Algorithm.BROTLI
     ? createBrotliDecompressStream()
     : createGunzipStream();
-  
+
   await pipeline(input, decompressor, output);
-  
+
   return fs.statSync(outputPath).size;
 }
 
 /**
- * Calculate compression ratio
+ * Calculate compression ratio.
+ * A zero-byte input has no meaningful ratio, so report a neutral 100%
+ * rather than dividing by zero and leaking Infinity/NaN into the database.
  */
 export function getCompressionRatio(originalSize, compressedSize) {
+  const ratio =
+    originalSize > 0
+      ? Number(((compressedSize / originalSize) * 100).toFixed(2))
+      : 100;
+
   return {
-    ratio: (compressedSize / originalSize * 100).toFixed(2),
-    savings: ((1 - compressedSize / originalSize) * 100).toFixed(2) + '%',
+    ratio,
+    savingsPercent: Number((100 - ratio).toFixed(2)),
     reduction: formatBytes(originalSize - compressedSize)
   };
 }
 
 /**
- * Format bytes to human readable
+ * Format bytes to human readable. Handles negative deltas (compression can
+ * inflate incompressible data) and non-finite input.
  */
 export function formatBytes(bytes, decimals = 2) {
-  if (bytes === 0) return '0 Bytes';
-  
+  if (!Number.isFinite(bytes)) return '0 Bytes';
+
+  const abs = Math.abs(bytes);
+  if (abs < 1) return '0 Bytes';
+
   const k = 1024;
-  const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(decimals)) + ' ' + sizes[i];
+  const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB'];
+  const i = Math.min(sizes.length - 1, Math.floor(Math.log(abs) / Math.log(k)));
+  const value = parseFloat((abs / Math.pow(k, i)).toFixed(decimals));
+
+  return `${bytes < 0 ? '-' : ''}${value} ${sizes[i]}`;
 }
 
 /**
